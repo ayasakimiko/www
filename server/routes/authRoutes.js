@@ -96,7 +96,13 @@ router.get('/admin/packets', verifyToken, requireAdmin, (req, res) => {
 
 // GET /api/packets
 router.get('/packets', verifyToken, (req, res) => {
-  res.json(packetsStore.getAll(50));
+  if (req.user.role === 'admin') {
+    return res.json(packetsStore.getAll(50));
+  }
+  const raw = (req.ip || req.socket?.remoteAddress || '').replace('::ffff:', '').trim();
+  const clientIp = (raw === '127.0.0.1' || raw === '::1' || !raw) ? null : raw;
+  const packets = clientIp ? packetsStore.getByIp(clientIp, 50) : [];
+  res.json(packets);
 });
 
 export default router;

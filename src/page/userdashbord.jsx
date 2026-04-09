@@ -54,6 +54,9 @@ export default function UserDashboard() {
   const [realRole, setRealRole] = useState('')
   const [scanning, setScanning] = useState(false)
   const [delay, setDelay]       = useState(0)
+  const [filterIp, setFilterIp] = useState('')
+  const [filterProtos, setFilterProtos] = useState([])
+  const [showModal, setShowModal] = useState(false)
   const socketRef               = useRef(null)
   const delayRef                = useRef(0)
 
@@ -98,8 +101,23 @@ export default function UserDashboard() {
     if (scanning) {
       socketRef.current.emit('stop-scan')
     } else {
-      socketRef.current.emit('start-scan')
+      setShowModal(true)
     }
+  }
+
+  function confirmStartScan() {
+    if (!socketRef.current) return
+    socketRef.current.emit('start-scan', {
+      protocols: filterProtos,
+      ip: filterIp.trim(),
+    })
+    setShowModal(false)
+  }
+
+  function toggleProto(proto) {
+    setFilterProtos(prev =>
+      prev.includes(proto) ? prev.filter(p => p !== proto) : [...prev, proto]
+    )
   }
 
   const { packets, stats, protoCnt } = live
@@ -130,21 +148,15 @@ export default function UserDashboard() {
         </div>
 
         {tab === 'live' && (
-          <div className="flex flex-wrap items-center gap-4">
-            {/* Delay Slider */}
-            <div className="flex items-center gap-2 bg-slate-800 px-4 py-2 rounded-lg">
-              <span className="text-slate-400 text-xs whitespace-nowrap">⏱ Delay:</span>
-              <input
-                type="range"
-                min={0}
-                max={3000}
-                step={100}
-                value={delay}
-                onChange={e => handleDelayChange(Number(e.target.value))}
-                className="w-28 accent-sky-400 cursor-pointer"
-              />
-              <span className="text-sky-400 text-xs font-mono w-14 text-right">{delay} ms</span>
-            </div>
+          <div className="flex items-center gap-3">
+            {scanning && (
+              <div className="flex items-center gap-2 text-xs text-slate-400 bg-slate-800 px-3 py-1.5 rounded-lg">
+                {filterProtos.length > 0 && <span className="text-sky-400">{filterProtos.join(', ')}</span>}
+                {filterIp && <span className="text-emerald-400 font-mono">{filterIp}</span>}
+                {delay > 0 && <span className="text-yellow-400">⏱ {delay}ms</span>}
+                {filterProtos.length === 0 && !filterIp && delay === 0 && <span>ทุก protocol</span>}
+              </div>
+            )}
             <button
               onClick={toggleScan}
               className={`flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-bold cursor-pointer transition-colors ${
@@ -222,6 +234,86 @@ export default function UserDashboard() {
 
       {/* ══ PAGE: ADMIN ══ */}
       {tab === 'admin' && realRole === 'admin' && <AdminDashboard token={token} />}
+
+      {/* ══ MODAL: Scan Filter ══ */}
+      {showModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          onClick={() => setShowModal(false)}
+        >
+          <div
+            className="bg-slate-800 rounded-2xl p-6 w-full max-w-md shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          >
+            <h2 className="text-white font-bold text-lg mb-5">▶️ Capture Settings</h2>
+
+            {/* Protocol */}
+            <div className="mb-5">
+              <p className="text-slate-400 text-xs mb-2">Protocol <span className="text-slate-500">(ไม่เลือก = ทุกตัว)</span></p>
+              <div className="flex flex-wrap gap-2">
+                {['TCP','UDP','HTTP','HTTPS','DNS','SSH'].map(proto => (
+                  <button
+                    key={proto}
+                    onClick={() => toggleProto(proto)}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-bold border transition-colors cursor-pointer ${
+                      filterProtos.includes(proto)
+                        ? 'bg-sky-500 border-sky-400 text-white'
+                        : 'bg-slate-700 border-slate-600 text-slate-300 hover:border-sky-500'
+                    }`}
+                  >
+                    {proto}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* IP Filter */}
+            <div className="mb-5">
+              <p className="text-slate-400 text-xs mb-2">IP Filter <span className="text-slate-500">(เว้นว่าง = ทุก IP)</span></p>
+              <input
+                type="text"
+                placeholder="เช่น 192.168.1.1"
+                value={filterIp}
+                onChange={e => setFilterIp(e.target.value)}
+                className="w-full bg-slate-700 text-slate-200 text-sm px-3 py-2 rounded-lg outline-none border border-slate-600 focus:border-sky-500"
+              />
+            </div>
+
+            {/* Delay */}
+            <div className="mb-6">
+              <p className="text-slate-400 text-xs mb-2">⏱ Packet Delay <span className="text-sky-400 font-mono">{delay} ms</span></p>
+              <input
+                type="range"
+                min={0}
+                max={3000}
+                step={100}
+                value={delay}
+                onChange={e => handleDelayChange(Number(e.target.value))}
+                className="w-full accent-sky-400 cursor-pointer"
+              />
+              <div className="flex justify-between text-xs text-slate-500 mt-1">
+                <span>0 ms</span><span>3000 ms</span>
+              </div>
+            </div>
+
+            {/* Buttons */}
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setShowModal(false)}
+                className="px-5 py-2 rounded-lg text-sm bg-slate-700 text-slate-300 hover:bg-slate-600 cursor-pointer transition-colors"
+              >
+                ยกเลิก
+              </button>
+              <button
+                onClick={confirmStartScan}
+                className="px-5 py-2 rounded-lg text-sm font-bold bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer transition-colors"
+              >
+                ▶️ เริ่ม Capture
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

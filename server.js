@@ -117,13 +117,17 @@ const clients = new Map();
 
 io.on("connection", (socket) => {
   const ips = resolveClientIps(socket.handshake.address);
-  clients.set(socket.id, { socket, ips, pps: 0 });
+  clients.set(socket.id, { socket, ips, pps: 0, filter: {} });
   console.log(`Client connected: ${ips.join(", ")}`);
 
   // ส่ง status ปัจจุบันให้ client ใหม่
   socket.emit("scan-status", isCapturing);
 
-  socket.on("start-scan", () => startCapture());
+  socket.on("start-scan", (filter) => {
+    const c = clients.get(socket.id);
+    if (c) c.filter = filter || {};
+    startCapture();
+  });
   socket.on("stop-scan", () => stopCapture());
   socket.on("disconnect", () => {
     clients.delete(socket.id);
@@ -137,11 +141,26 @@ setInterval(() => {
   }
 }, 1000);
 
+function matchFilter(pkt, filter = {}) {
+  // กรอง protocol
+  if (filter.protocols && filter.protocols.length > 0) {
+    if (!filter.protocols.includes(pkt.protocol)) return false;
+  }
+  // กรอง IP
+  if (filter.ip && filter.ip.trim()) {
+    const ip = filter.ip.trim();
+    if (pkt.source_ip !== ip && pkt.dest_ip !== ip) return false;
+  }
+  return true;
+}
+
 function routePacket(pkt) {
   for (const [, c] of clients) {
     if (c.ips.includes(pkt.source_ip) || c.ips.includes(pkt.dest_ip)) {
-      c.socket.emit("packet-stream", pkt);
-      c.pps++;
+      if (matchFilter(pkt, c.filter)) {
+        c.socket.emit("packet-stream", pkt);
+        c.pps++;
+      }
     }
   }
 }
