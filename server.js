@@ -1,0 +1,256 @@
+﻿import express from "express";
+import { createServer } from "http";
+import { Server } from "socket.io";
+import { spawn, execFileSync } from "child_process";
+import { networkInterfaces } from "os";
+import cors from "cors";
+import { packetsStore } from "./server/db.js";
+import authRoutes from "./server/routes/authRoutes.js";
+import { config } from "dotenv";
+
+config();
+
+const app = express();
+const server = createServer(app);
+const io = new Server(server, { cors: { origin: "*" } });
+
+app.use(cors());
+app.use(express.json());
+app.use(express.static("public"));
+app.use("/api", authRoutes);
+
+// Global error handler — ป้องกัน unhandled error ส่งออก 500 แบบ silent
+app.use((err, req, res, next) => {
+  console.error('[Express Error]', err.message);
+  res.status(500).json({ message: err.message });
+});
+
+const ENCRYPTION_MAP = {
+  443: "TLS 1.3",
+  8443: "TLS 1.2",
+  22: "SSH 2.0",
+  993: "TLS 1.2",
+  465: "SSL 3.0",
+  636: "TLS 1.2",
+};
+
+function getProtocol(protos, port) {
+  const p = (protos || "").toLowerCase();
+  if (port === 443 || port === 8443) return "HTTPS";
+  if (port === 80 || port === 8080) return "HTTP";
+  if (port === 22) return "SSH";
+  if (port === 53 || p.includes("dns")) return "DNS";
+  if (p.includes("udp")) return "UDP";
+  return "TCP";
+}
+
+// คืน IP จริงทุกตัวของเครื่อง (ข้าม loopback)
+function getMachineIps() {
+  const ips = [];
+  for (const iface of Object.values(networkInterfaces())) {
+    for (const net of iface) {
+      if (net.family === "IPv4" && !net.internal) ips.push(net.address);
+    }
+  }
+  return ips.length ? ips : ["127.0.0.1"];
+}
+
+const MACHINE_IPS = getMachineIps();
+console.log("Machine IPs:", MACHINE_IPS);
+
+function resolveClientIps(raw) {
+  const ip = (raw || "").replace("::ffff:", "").trim();
+  return ip === "127.0.0.1" || ip === "::1" ? MACHINE_IPS : [ip];
+}
+
+function detectInterface() {
+  if (process.env.CAPTURE_IFACE) return process.env.CAPTURE_IFACE;
+  const TSHARK_BIN =
+    process.env.TSHARK_PATH ||
+    (process.platform === "win32"
+      ? "C:\\Program Files\\Wireshark\\tshark.exe"
+      : "tshark");
+  try {
+    const out = execFileSync(TSHARK_BIN, ["-D"], {
+      encoding: "utf8",
+      timeout: 5000,
+    });
+    const lines = out.trim().split("\n");
+    const skip = [
+      "loopback",
+      "bluetooth",
+      "vethernet",
+      "local area connection*",
+      "etw",
+    ];
+
+    // ลำดับ priority: wi-fi ก่อน ethernet
+    const priority = ["wi-fi", "wlan", "wireless", "ethernet", "eth", "en0", "wlp", "ens"];
+
+    for (const keyword of priority) {
+      for (const line of lines) {
+        const lower = line.toLowerCase();
+        if (skip.some((s) => lower.includes(s))) continue;
+        if (lower.includes(keyword)) {
+          const num = line.match(/^(\d+)\./)?.[1];
+          if (num) {
+            console.log(`Detected: ${line.trim()}`);
+            return num;
+          }
+        }
+      }
+    }
+    for (const line of lines) {
+      const lower = line.toLowerCase();
+      if (skip.some((s) => lower.includes(s))) continue;
+      const num = line.match(/^(\d+)\./)?.[1];
+      if (num) {
+        console.log(`Fallback: ${line.trim()}`);
+        return num;
+      }
+    }
+  } catch {}
+  return process.platform === "win32" ? "1" : "any";
+}
+
+const clients = new Map();
+
+io.on("connection", (socket) => {
+  const ips = resolveClientIps(socket.handshake.address);
+  clients.set(socket.id, { socket, ips, pps: 0 });
+  console.log(`Client connected: ${ips.join(", ")}`);
+
+  // ส่ง status ปัจจุบันให้ client ใหม่
+  socket.emit("scan-status", isCapturing);
+
+  socket.on("start-scan", () => startCapture());
+  socket.on("stop-scan", () => stopCapture());
+  socket.on("disconnect", () => {
+    clients.delete(socket.id);
+  });
+});
+
+setInterval(() => {
+  for (const [, c] of clients) {
+    c.socket.emit("packets-per-sec", c.pps);
+    c.pps = 0;
+  }
+}, 1000);
+
+function routePacket(pkt) {
+  for (const [, c] of clients) {
+    if (c.ips.includes(pkt.source_ip) || c.ips.includes(pkt.dest_ip)) {
+      c.socket.emit("packet-stream", pkt);
+      c.pps++;
+    }
+  }
+}
+
+const TSHARK =
+  process.env.TSHARK_PATH ||
+  (process.platform === "win32"
+    ? "C:\\Program Files\\Wireshark\\tshark.exe"
+    : "tshark");
+const IFACE = detectInterface();
+console.log(`Interface: ${IFACE}`);
+
+let tsharkProc = null;
+let isCapturing = false;
+
+function startCapture() {
+  if (isCapturing) return;
+  isCapturing = true;
+  io.emit("scan-status", true);
+
+  // BPF capture filter: เฉพาะ IPv4 และต้องมี IP ของเครื่องเราเป็น src หรือ dst
+  const hostFilter = MACHINE_IPS.map((ip) => `host ${ip}`).join(" or ");
+  const captureFilter = `ip and (${hostFilter})`;
+  console.log("Capture filter:", captureFilter);
+
+  tsharkProc = spawn(TSHARK, [
+    "-i",
+    IFACE,
+    "-f",
+    captureFilter,
+    "-T",
+    "fields",
+    "-e",
+    "ip.src",
+    "-e",
+    "ip.dst",
+    "-e",
+    "tcp.dstport",
+    "-e",
+    "udp.dstport",
+    "-e",
+    "frame.protocols",
+    "-e",
+    "frame.len",
+    "-E",
+    "separator=|",
+    "-E",
+    "occurrence=f",
+    "-l",
+  ]);
+
+  let buf = "";
+  tsharkProc.stdout.on("data", (chunk) => {
+    buf += chunk.toString();
+    const lines = buf.split("\n");
+    buf = lines.pop();
+    for (const line of lines) {
+      const p = line.trim().split("|");
+      if (!p[0] || !p[1]) continue; // ต้องมี src+dst IP
+      const port = parseInt(p[2] || p[3]) || 0;
+      const enc = ENCRYPTION_MAP[port] || null;
+      routePacket({
+        source_ip: p[0],
+        dest_ip: p[1],
+        protocol: getProtocol(p[4] || "", port),
+        port,
+        is_encrypted: enc ? 1 : 0,
+        encryption_type: enc || "None",
+        size: parseInt(p[5]) || 0,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  });
+
+  tsharkProc.stderr.on("data", (d) => {
+    const msg = d.toString().trim();
+    if (msg && !msg.toLowerCase().includes("capturing on"))
+      console.error("[tshark]", msg);
+  });
+
+  tsharkProc.on("error", (e) => {
+    console.error("tshark error:", e.message);
+    isCapturing = false;
+    io.emit("scan-status", false);
+  });
+
+  tsharkProc.on("close", (code) => {
+    tsharkProc = null;
+    isCapturing = false;
+    io.emit("scan-status", false);
+    console.log(`tshark stopped (exit ${code})`);
+  });
+
+  console.log(`tshark capturing on interface "${IFACE}"`);
+}
+
+function stopCapture() {
+  if (!tsharkProc) return;
+  tsharkProc.stdout.removeAllListeners();
+  tsharkProc.stderr.removeAllListeners();
+  tsharkProc.removeAllListeners("close");
+  tsharkProc.kill();
+  tsharkProc = null;
+  isCapturing = false;
+  io.emit("scan-status", false);
+  console.log("tshark stopped by user");
+}
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () =>
+  console.log(`Server ready at http://localhost:${PORT}`),
+);

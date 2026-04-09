@@ -1,0 +1,97 @@
+import { useState } from 'react'
+import { useNavigate, Link } from 'react-router-dom'
+
+export default function Register() {
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [confirm, setConfirm]   = useState('')
+  const [msg, setMsg]           = useState({ text: '', ok: true })
+  const [loading, setLoading]   = useState(false)
+  const navigate = useNavigate()
+
+  async function handleRegister() {
+    if (!username.trim() || !password.trim() || !confirm.trim())
+      return setMsg({ text: 'กรุณากรอกข้อมูลให้ครบ', ok: false })
+    if (password !== confirm)
+      return setMsg({ text: 'Password ไม่ตรงกัน', ok: false })
+
+    setLoading(true)
+    setMsg({ text: '', ok: true })
+    try {
+      const res = await fetch('/api/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: username.trim(), password: password.trim() })
+      })
+      const data = await res.json()
+      if (res.ok) {
+        setMsg({ text: '✅ สมัครสำเร็จ กำลังพาไป Login...', ok: true })
+        setTimeout(() => navigate('/'), 1200)
+      } else {
+        setMsg({ text: '❌ ' + data.message, ok: false })
+      }
+    } catch {
+      setMsg({ text: '❌ ไม่สามารถเชื่อมต่อ server', ok: false })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+      <div className="bg-slate-800 p-10 rounded-2xl w-96 shadow-2xl">
+        <h2 className="text-sky-400 text-2xl font-bold text-center mb-1">
+          📝 Register
+        </h2>
+        <p className="text-slate-500 text-xs text-center mb-6">
+          สร้างบัญชีใหม่
+        </p>
+
+        <input
+          className="w-full px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-lg text-white text-sm mb-3 outline-none focus:border-sky-400"
+          placeholder="Username"
+          value={username}
+          onChange={e => setUsername(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && handleRegister()}
+        />
+        <input
+          type="password"
+          className="w-full px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-lg text-white text-sm mb-3 outline-none focus:border-sky-400"
+          placeholder="Password"
+          value={password}
+          onChange={e => setPassword(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && handleRegister()}
+        />
+        <input
+          type="password"
+          className="w-full px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-lg text-white text-sm mb-4 outline-none focus:border-sky-400"
+          placeholder="Confirm Password"
+          value={confirm}
+          onChange={e => setConfirm(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && handleRegister()}
+        />
+
+        <button
+          onClick={handleRegister}
+          disabled={loading}
+          className="w-full py-2.5 bg-sky-400 text-slate-900 font-bold rounded-lg text-sm hover:bg-sky-300 disabled:opacity-60 cursor-pointer transition-colors"
+        >
+          {loading ? 'Loading...' : 'Register'}
+        </button>
+
+        {msg.text && (
+          <p className={`text-center text-xs mt-3 ${msg.ok ? 'text-green-400' : 'text-red-400'}`}>
+            {msg.text}
+          </p>
+        )}
+
+        <p className="text-center text-xs text-slate-500 mt-4">
+          มีบัญชีแล้ว?{' '}
+          <Link to="/" className="text-sky-400 hover:underline">
+            Sign In
+          </Link>
+        </p>
+      </div>
+    </div>
+  )
+}
