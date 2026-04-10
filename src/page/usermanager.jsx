@@ -1,6 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Navbar from './navbar'
+import { Users, RefreshCw, ShieldCheck, UserCog, Trash2, ArrowUpCircle, ArrowDownCircle } from 'lucide-react'
+
+const ROLE_RANK = { admin: 2, user: 1 }
+function canActOn(myRole, targetRole, isMe) {
+  if (isMe) return false
+  return ROLE_RANK[myRole] > ROLE_RANK[targetRole]
+}
 
 export default function UserManager() {
   const navigate = useNavigate()
@@ -78,7 +85,7 @@ export default function UserManager() {
 
       <div className="bg-slate-800 rounded-xl p-5">
         <div className="flex justify-between items-center mb-5">
-          <h3 className="text-white font-bold text-base">👥 User Management</h3>
+          <h3 className="text-white font-bold text-base flex items-center gap-2"><Users size={16} /> User Management</h3>
           <div className="flex items-center gap-3">
             {msg && (
               <span className={`text-xs ${msg.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>
@@ -87,9 +94,9 @@ export default function UserManager() {
             )}
             <button
               onClick={loadUsers}
-              className="px-3 py-1.5 bg-sky-700 text-white rounded-lg text-xs hover:bg-sky-600 cursor-pointer transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-sky-700 text-white rounded-lg text-xs hover:bg-sky-600 cursor-pointer transition-colors"
             >
-              🔄 Refresh
+              <RefreshCw size={12} /> Refresh
             </button>
           </div>
         </div>
@@ -107,10 +114,16 @@ export default function UserManager() {
                 </tr>
               </thead>
               <tbody>
-                {users.map(u => (
+                {users.map(u => {
+                    const isMe = u.username === username
+                    const allowed = canActOn(realRole, u.role, isMe)
+                    return (
                   <tr key={u.id} className="border-t border-slate-700/40 hover:bg-slate-700/20 transition-colors">
                     <td className="py-3 pr-4 text-slate-500 text-xs">{u.id}</td>
-                    <td className="py-3 pr-4 font-mono">{u.username}</td>
+                    <td className="py-3 pr-4 font-mono">
+                      {u.username}
+                      {isMe && <span className="ml-2 text-xs text-sky-400">(คุณ)</span>}
+                    </td>
                     <td className="py-3 pr-4">
                       <span className={`px-2 py-0.5 rounded text-xs font-bold ${
                         u.role === 'admin'
@@ -122,22 +135,29 @@ export default function UserManager() {
                     </td>
                     <td className="py-3">
                       <div className="flex gap-2">
-                        <button
-                          onClick={() => changeRole(u.id, u.role === 'admin' ? 'user' : 'admin')}
-                          className="px-3 py-1 bg-amber-700/60 text-amber-300 rounded text-xs hover:bg-amber-700 cursor-pointer transition-colors"
-                        >
-                          {u.role === 'admin' ? '⬇️ Set User' : '⬆️ Set Admin'}
-                        </button>
-                        <button
-                          onClick={() => deleteUser(u.id)}
-                          className="px-3 py-1 bg-red-900/60 text-red-400 rounded text-xs hover:bg-red-800 cursor-pointer transition-colors"
-                        >
-                          🗑️ Delete
-                        </button>
+                        {allowed && (
+                          <>
+                            <button
+                              onClick={() => changeRole(u.id, u.role === 'admin' ? 'user' : 'admin')}
+                              className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-700/60 text-amber-300 rounded text-xs hover:bg-amber-700 cursor-pointer transition-colors"
+                            >
+                              {u.role === 'admin'
+                                ? <><ArrowDownCircle size={12} /> Set User</>
+                                : <><ArrowUpCircle size={12} /> Set Admin</>}
+                            </button>
+                            <button
+                              onClick={() => deleteUser(u.id)}
+                              className="inline-flex items-center gap-1.5 px-3 py-1 bg-red-900/60 text-red-400 rounded text-xs hover:bg-red-800 cursor-pointer transition-colors"
+                            >
+                              <Trash2 size={12} /> Delete
+                            </button>
+                          </>
+                        )}
                       </div>
                     </td>
                   </tr>
-                ))}
+                    )
+                  })}
               </tbody>
             </table>
           </div>

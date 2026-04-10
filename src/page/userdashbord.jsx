@@ -11,7 +11,6 @@ import {
   PieChart, Pie, Cell, Legend, Tooltip,
   BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer
 } from 'recharts'
-import AdminDashboard from './admindashbord'
 import Navbar from './navbar'
 
 const MAX_PACKETS = 20
@@ -90,6 +89,22 @@ const PROTO_BADGE = {
   https: 'bg-emerald-900/60 text-emerald-400',
   dns:   'bg-pink-900/60 text-pink-300',
   ssh:   'bg-teal-900/60 text-teal-300',
+}
+
+function shortIfaceName(name) {
+  const n = name.toLowerCase()
+  if (n.includes('loopback') || n.includes('lo ')) return 'lo'
+  if (n.includes('bluetooth'))     return 'bt0'
+  if (n.includes('vethernet') || n.includes('veth')) {
+    const wsl = n.includes('wsl') ? '-wsl' : ''
+    return `veth${wsl}`
+  }
+  const wifiM = name.match(/wi[\s-]?fi\s*(\d*)/i)
+  if (wifiM) return `wlan${wifiM[1] ? parseInt(wifiM[1]) - 1 : 0}`
+  const lanM = name.match(/(local area|lan).*?(\d+)$/i)
+  if (lanM) return `eth${lanM[2]}`
+  if (n.includes('ethernet')) return 'eth0'
+  return name.replace(/\s+/g, '').slice(0, 8).toLowerCase()
 }
 
 const initLive = {
@@ -246,16 +261,13 @@ export default function UserDashboard() {
           <TabBtn active={tab === 'history'} onClick={() => { setTab('history'); loadHistory() }}>
             <FolderOpen size={14} /> Packet History
           </TabBtn>
-          {realRole === 'admin' && (
-            <TabBtn active={tab === 'admin'} onClick={() => setTab('admin')}><ShieldCheck size={14} /> Admin Panel</TabBtn>
-          )}
         </div>
 
         {tab === 'live' && (
           <div className="flex items-center gap-3">
             {scanning && (
               <div className="flex items-center gap-2 text-xs text-slate-400 bg-slate-800 px-3 py-1.5 rounded-lg">
-                {selectedIface && <span className="text-violet-400 flex items-center gap-1"><Plug size={12} /> {interfaces.find(i => i.id === selectedIface)?.name || selectedIface}</span>}
+                {selectedIface && <span className="text-violet-400 flex items-center gap-1"><Plug size={12} /> {shortIfaceName(interfaces.find(i => i.id === selectedIface)?.name || selectedIface)}</span>}
                 {filterProtos.length > 0 && <span className="text-sky-400">{filterProtos.join(', ')}</span>}
                 {filterIp && <span className="text-emerald-400 font-mono">{filterIp}</span>}
                 {delay > 0 && <span className="text-yellow-400 flex items-center gap-1"><Timer size={12} /> {delay}ms</span>}
@@ -412,9 +424,6 @@ export default function UserDashboard() {
         </div>
       )}
 
-      {/* ══ PAGE: ADMIN ══ */}
-      {tab === 'admin' && realRole === 'admin' && <AdminDashboard token={token} />}
-
       {/* ══ MODAL: Packet Detail ══ */}
       {selectedPacket && (
         <PacketDetailModal packet={selectedPacket} onClose={() => setSelectedPacket(null)} />
@@ -443,7 +452,7 @@ export default function UserDashboard() {
                 >
                   <option value="">— ทุก interface —</option>
                   {interfaces.map(iface => (
-                    <option key={iface.id} value={iface.id}>{iface.name}</option>
+                    <option key={iface.id} value={iface.id}>{shortIfaceName(iface.name)}</option>
                   ))}
                 </select>
               </div>
