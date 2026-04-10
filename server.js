@@ -63,54 +63,41 @@ function resolveClientIps(raw) {
   return ip === "127.0.0.1" || ip === "::1" ? MACHINE_IPS : [ip];
 }
 
-function detectInterface() {
-  if (process.env.CAPTURE_IFACE) return process.env.CAPTURE_IFACE;
+function detectAllInterfaces() {
+  if (process.env.CAPTURE_IFACE) {
+    return [{ id: process.env.CAPTURE_IFACE, name: process.env.CAPTURE_IFACE }];
+  }
+
+  // Linux/Mac: 'any' จับทุก interface ในคำสั่งเดียว
+  if (process.platform !== "win32") return [{ id: "any", name: "any" }];
+
   const TSHARK_BIN =
     process.env.TSHARK_PATH ||
-    (process.platform === "win32"
-      ? "C:\\Program Files\\Wireshark\\tshark.exe"
-      : "tshark");
+    "C:\\Program Files\\Wireshark\\tshark.exe";
   try {
     const out = execFileSync(TSHARK_BIN, ["-D"], {
       encoding: "utf8",
       timeout: 5000,
     });
     const lines = out.trim().split("\n");
-    const skip = [
-      "loopback",
-      "bluetooth",
-      "vethernet",
-      "local area connection*",
-      "etw",
-    ];
 
-    // ลำดับ priority: wi-fi ก่อน ethernet
-    const priority = ["wi-fi", "wlan", "wireless", "ethernet", "eth", "en0", "wlp", "ens"];
-
-    for (const keyword of priority) {
-      for (const line of lines) {
-        const lower = line.toLowerCase();
-        if (skip.some((s) => lower.includes(s))) continue;
-        if (lower.includes(keyword)) {
-          const num = line.match(/^(\d+)\./)?.[1];
-          if (num) {
-            console.log(`Detected: ${line.trim()}`);
-            return num;
-          }
-        }
-      }
-    }
+    const ifaces = [];
     for (const line of lines) {
-      const lower = line.toLowerCase();
-      if (skip.some((s) => lower.includes(s))) continue;
-      const num = line.match(/^(\d+)\./)?.[1];
-      if (num) {
-        console.log(`Fallback: ${line.trim()}`);
-        return num;
-      }
+      const match = line.match(/^(\d+)\.\s*(.+)/);
+      if (!match) continue;
+      const id = match[1];
+      const raw = match[2].trim();
+      // ดึง friendly name จากวงเล็บท้ายสุด รองรับ nested parens เช่น (vEthernet (WSL))
+      const parenMatch = raw.match(/\((.+)\)\s*$/);
+      const name = parenMatch ? parenMatch[1].trim() : raw;
+      // ข้ามเฉพาะ ETW ที่ไม่ใช่ network interface จริงๆ
+      if (name.toLowerCase().includes("event tracing") || raw.toLowerCase().startsWith("etw")) continue;
+      console.log(`Interface found: [${id}] ${name}`);
+      ifaces.push({ id, name });
     }
+    return ifaces.length ? ifaces : [{ id: "1", name: "Interface 1" }];
   } catch {}
-  return process.platform === "win32" ? "1" : "any";
+  return [{ id: "1", name: "Interface 1" }];
 }
 
 const clients = new Map();
@@ -123,10 +110,15 @@ io.on("connection", (socket) => {
   // ส่ง status ปัจจุบันให้ client ใหม่
   socket.emit("scan-status", isCapturing);
 
+  // ส่งรายการ interface ให้ client
+  socket.on("get-interfaces", (cb) => {
+    if (typeof cb === "function") cb(ALL_IFACES);
+  });
+
   socket.on("start-scan", (filter) => {
     const c = clients.get(socket.id);
     if (c) c.filter = filter || {};
-    startCapture();
+    startCapture(filter?.interfaces);
   });
   socket.on("stop-scan", () => stopCapture());
   socket.on("disconnect", () => {
@@ -170,25 +162,32 @@ const TSHARK =
   (process.platform === "win32"
     ? "C:\\Program Files\\Wireshark\\tshark.exe"
     : "tshark");
-const IFACE = detectInterface();
-console.log(`Interface: ${IFACE}`);
+const ALL_IFACES = detectAllInterfaces();
+console.log(`Interfaces: ${ALL_IFACES.map((i) => `${i.id}(${i.name})`).join(", ")}`);
 
 let tsharkProc = null;
 let isCapturing = false;
 
-function startCapture() {
+function startCapture(selectedIfaces) {
   if (isCapturing) return;
   isCapturing = true;
   io.emit("scan-status", true);
+
+  // ใช้ interface ที่ client เลือก ถ้าไม่เลือก = ทุก interface
+  const ifaceIds =
+    selectedIfaces && selectedIfaces.length > 0
+      ? selectedIfaces
+      : ALL_IFACES.map((i) => i.id);
 
   // BPF capture filter: เฉพาะ IPv4 และต้องมี IP ของเครื่องเราเป็น src หรือ dst
   const hostFilter = MACHINE_IPS.map((ip) => `host ${ip}`).join(" or ");
   const captureFilter = `ip and (${hostFilter})`;
   console.log("Capture filter:", captureFilter);
+  console.log("Capturing on:", ifaceIds.join(", "));
 
+  const ifaceArgs = ifaceIds.flatMap((i) => ["-i", i]);
   tsharkProc = spawn(TSHARK, [
-    "-i",
-    IFACE,
+    ...ifaceArgs,
     "-f",
     captureFilter,
     "-T",
@@ -205,6 +204,10 @@ function startCapture() {
     "frame.protocols",
     "-e",
     "frame.len",
+    "-e",
+    "tls.handshake.version",
+    "-e",
+    "x509af.notAfter",
     "-E",
     "separator=|",
     "-E",
@@ -222,6 +225,8 @@ function startCapture() {
       if (!p[0] || !p[1]) continue; // ต้องมี src+dst IP
       const port = parseInt(p[2] || p[3]) || 0;
       const enc = ENCRYPTION_MAP[port] || null;
+      const tlsVer = p[6] || "";
+      const certExpiry = p[7] || "";
       routePacket({
         source_ip: p[0],
         dest_ip: p[1],
@@ -230,6 +235,8 @@ function startCapture() {
         is_encrypted: enc ? 1 : 0,
         encryption_type: enc || "None",
         size: parseInt(p[5]) || 0,
+        tls_version: tlsVer,
+        cert_expiry: certExpiry,
         timestamp: new Date().toISOString(),
       });
     }
@@ -254,7 +261,7 @@ function startCapture() {
     console.log(`tshark stopped (exit ${code})`);
   });
 
-  console.log(`tshark capturing on interface "${IFACE}"`);
+  console.log(`tshark capturing on interfaces: ${ifaceIds.join(", ")}`);
 }
 
 function stopCapture() {

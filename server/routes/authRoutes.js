@@ -100,8 +100,11 @@ router.get('/packets', verifyToken, (req, res) => {
     return res.json(packetsStore.getAll(50));
   }
   const raw = (req.ip || req.socket?.remoteAddress || '').replace('::ffff:', '').trim();
-  const clientIp = (raw === '127.0.0.1' || raw === '::1' || !raw) ? null : raw;
-  const packets = clientIp ? packetsStore.getByIp(clientIp, 50) : [];
+  // localhost → ใช้ MACHINE_IPS เหมือนฝั่ง server
+  const isLocal = raw === '127.0.0.1' || raw === '::1' || !raw;
+  const packets = isLocal
+    ? packetsStore.getAll(50)
+    : packetsStore.getByIp(raw, 50);
   res.json(packets);
 });
 

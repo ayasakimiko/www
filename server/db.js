@@ -1,5 +1,5 @@
 
- import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+ import { readFileSync, writeFileSync, existsSync, mkdirSync, writeFile } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -55,19 +55,42 @@ const usersStore = {
 
 const MAX_PACKETS = 50;
 
+// in-memory buffer — ไม่แตะ disk จนกว่าจะ flush
+let packetBuffer = null;
+let flushTimer = null;
+
+function getBuffer() {
+  if (packetBuffer === null) {
+    packetBuffer = readJSON('packets.json');
+  }
+  return packetBuffer;
+}
+
+function scheduleFlush() {
+  if (flushTimer) return;
+  flushTimer = setTimeout(() => {
+    flushTimer = null;
+    if (packetBuffer === null) return;
+    const data = JSON.stringify(packetBuffer, null, 2);
+    writeFile(join(DATA_DIR, 'packets.json'), data, 'utf8', (err) => {
+      if (err) console.error('[db] flush error:', err.message);
+    });
+  }, 1000); // เขียนทุก 1 วินาที ไม่ว่าจะรับกี่ packet
+}
+
 const packetsStore = {
   insert(pkt) {
-    const packets = readJSON('packets.json');
-    const id = packets.length ? Math.max(...packets.map(p => p.id)) + 1 : 1;
+    const packets = getBuffer();
+    const id = packets.length ? packets[0].id + 1 : 1;
     packets.unshift({ id, ...pkt, timestamp: new Date().toISOString() });
-    if (packets.length > MAX_PACKETS) packets.splice(MAX_PACKETS);
-    writeJSON('packets.json', packets);
+    if (packets.length > MAX_PACKETS) packets.length = MAX_PACKETS;
+    scheduleFlush();
   },
   getAll(limit = 100) {
-    return readJSON('packets.json').slice(0, limit);
+    return getBuffer().slice(0, limit);
   },
   getByIp(ip, limit = 50) {
-    return readJSON('packets.json')
+    return getBuffer()
       .filter(p => p.source_ip === ip || p.dest_ip === ip)
       .slice(0, limit);
   },
